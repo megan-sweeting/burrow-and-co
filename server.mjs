@@ -1567,6 +1567,10 @@ const server = http.createServer(async (req, res) => {
   const viaTailscale = !!TS_LOGIN && req.headers['tailscale-user-login'] === TS_LOGIN;
   if (!local && !viaTailscale) {
     res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
+    if (!TS_LOGIN) {
+      if (Date.now() - tsLookupAt > 10000) lookupTailscaleLogin();
+      return res.end('The office is still finding your Tailscale login. Try again in a few seconds.');
+    }
     return res.end('This office only opens for its owner.');
   }
   const url = new URL(req.url, `http://${req.headers.host}`);
@@ -2095,15 +2099,28 @@ const server = http.createServer(async (req, res) => {
 
 // The one Tailscale account allowed in from other devices (tailscale serve adds this header).
 let TS_LOGIN = process.env.OFFICE_TAILSCALE_LOGIN || '';
-if (!TS_LOGIN) {
+let tsLookupAt = 0, tsLooking = false;
+function lookupTailscaleLogin() {
+  if (TS_LOGIN || tsLooking) return;
   const tsBin = findTailscale();
-  if (tsBin) execFile(tsBin, ['status', '--json'], { timeout: 5000 }, (err, out) => {
+  if (!tsBin) return;
+  tsLooking = true;
+  tsLookupAt = Date.now();
+  execFile(tsBin, ['status', '--json'], { timeout: 5000 }, (err, out) => {
+    tsLooking = false;
     try {
       const d = JSON.parse(out);
+      if (d.BackendState && d.BackendState !== 'Running') return;
       TS_LOGIN = d.User?.[String(d.Self?.UserID)]?.LoginName || '';
       if (TS_LOGIN) console.log(`  Tailscale: open to ${TS_LOGIN} from their other devices.`);
     } catch {}
   });
+}
+// The office can start before Tailscale connects (right after Mac login), so keep looking until it does.
+if (!TS_LOGIN) {
+  lookupTailscaleLogin();
+  const tsRetry = setInterval(() => TS_LOGIN ? clearInterval(tsRetry) : lookupTailscaleLogin(), 30000);
+  tsRetry.unref();
 }
 
 // The Mac app's Restart the Office stops the office this way: end the critters' claude processes and save first.
