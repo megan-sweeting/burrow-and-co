@@ -841,13 +841,18 @@ const SAYS = {
 const EDIT_TOOLS = ['Edit', 'Write', 'MultiEdit', 'NotebookEdit'];
 
 let office = { projects: [], workers: [], whiteboard: '', settings: { theme: 'system' } };
+// Until a critter starts and the office asks Claude Code for its own list (office.models).
 const MODELS = [
-  ['', 'Default (your Claude Code setting)'],
-  ['claude-fable-5-1', 'Fable 5.1'],
-  ['claude-opus-5-5', 'Opus 5.5'],
-  ['claude-sonnet-5-5', 'Sonnet 5.5'],
-  ['claude-haiku-4-5-20251001', 'Haiku 4.5'],
+  { value: '', label: 'Default (your Claude Code setting)' },
+  { value: 'opus', label: 'Opus (always the newest)', latest: true },
+  { value: 'sonnet', label: 'Sonnet (always the newest)', latest: true },
+  { value: 'haiku', label: 'Haiku (always the newest)', latest: true },
+  { value: 'claude-fable-5-1', label: 'Fable 5.1' },
+  { value: 'claude-opus-5-5', label: 'Opus 5.5' },
+  { value: 'claude-sonnet-5-5', label: 'Sonnet 5.5' },
+  { value: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5' },
 ];
+const modelList = () => office.models?.length ? office.models : MODELS;
 // This computer (Mac, Windows or Linux): words and abilities, sent by the office in its hello.
 let SYS = { os: 'mac', computer: 'Mac', system: 'Mac', files: 'Finder', terminal: 'Terminal', termWindow: 'Terminal window',
   keys: 'the keychain', adminLine: 'Admin (sudo) commands, shutting down, disks, background services', sandbox: true, sandboxMissing: '', desktop: true };
@@ -881,7 +886,17 @@ function applyTheme() {
   window.webkit?.messageHandlers?.office?.postMessage({ kind: 'theme', value: pref });
 }
 darkMedia.addEventListener('change', applyTheme);
-const modelName = id => (MODELS.find(m => m[0] === (id || '')) || MODELS[0])[1];
+// An older pick that left the list still shows by name (or its id) instead of looking like Default.
+const modelName = id => { const all = modelList();
+  const same = all.find(m => m.resolved === id);
+  return all.find(m => m.value === (id || ''))?.label || same?.name || same?.label || id; };
+function modelOptions(p) {
+  const cur = p.model || '', all = modelList();
+  const opt = m => `<option value="${esc(m.value)}" ${cur === m.value ? 'selected' : ''}>${esc(m.label)}</option>`;
+  const old = all.some(m => m.value === cur) ? '' : opt({ value: cur, label: modelName(cur) });
+  return `${opt(all[0])}${old}<optgroup label="Moves up when a new one comes out">${all.filter(m => m.latest).map(opt).join('')}</optgroup>` +
+    `<optgroup label="Stays on this exact version">${all.slice(1).filter(m => !m.latest).map(opt).join('')}</optgroup>`;
+}
 let busy = new Set();
 let perms = new Map();
 let moods = new Set(); // mood pictures that exist, e.g. "forest-fox-needs"
@@ -1979,8 +1994,7 @@ function renderSettings() {
             <div class="what"><b>${esc(p.name)}${p.deskOf ? ' · desk mate' : ''}</b><span>${esc(w.name)} the ${esc(animalOf(w))}</span>${w.bio ? `<span class="bio">${esc(w.bio)}</span>` : ''}</div>
             <div class="pickers">
               <label class="muted" for="model-${p.id}">Model</label>
-              <select class="field" id="model-${p.id}" data-model="${p.id}">${MODELS.map(([id, label]) =>
-                `<option value="${id}" ${(p.model || '') === id ? 'selected' : ''}>${label}</option>`).join('')}</select>
+              <select class="field" id="model-${p.id}" data-model="${p.id}">${modelOptions(p)}</select>
               <label class="muted" for="effort-${p.id}">Effort</label>
               <select class="field" id="effort-${p.id}" data-effort="${p.id}">${EFFORTS.map(([k, l]) =>
                 `<option value="${k}" ${(p.effort || '') === k ? 'selected' : ''}>${l}</option>`).join('')}</select>
@@ -2938,6 +2952,9 @@ function connect() {
       if (view === 'settings') render();
     } else if (ev.type === 'toast') {
       toast(ev.text);
+    } else if (ev.type === 'models') {
+      office.models = ev.models;
+      if (view === 'settings') render();
     } else if (ev.type === 'settings') {
       office.settings = ev.settings;
       applyTheme();

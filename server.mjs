@@ -90,8 +90,23 @@ const STYLES = {
   "garden-lamb": "Soft and airy, a lilting rhythm. Favourite words: \"softly\", \"gently\", \"all calm\". Quips about humming, music and clouds."
 };
 const PLATES = ['moss', 'berry', 'mustard'];
-// Models a critter can use; '' means the Claude Code default from your own settings.
-const MODELS = ['', 'claude-fable-5-1', 'claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-4-5-20251001'];
+// Models a critter can use; '' means the Claude Code default from your own settings. This is only the
+// starting list: once a critter starts, Claude Code's own list replaces it (see refreshModels), so models
+// released after the office was set up show up without an office update.
+const MODELS = [
+  { value: '', label: 'Default (your Claude Code setting)' },
+  { value: 'opus', label: 'Opus (always the newest)', latest: true },
+  { value: 'sonnet', label: 'Sonnet (always the newest)', latest: true },
+  { value: 'haiku', label: 'Haiku (always the newest)', latest: true },
+  { value: 'claude-fable-5-1', label: 'Fable 5.1' },
+  { value: 'claude-opus-5-5', label: 'Opus 5.5' },
+  { value: 'claude-sonnet-5-5', label: 'Sonnet 5.5' },
+  { value: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5' },
+];
+const ALIASES = ['opus', 'sonnet', 'haiku', 'fable'];
+const modelList = () => office.models?.length ? office.models : MODELS;
+// A pick that left Claude Code's list (an older model) stays valid for the critters already using it.
+const knownModel = (v, p) => v === p.model || modelList().some(m => m.value === v);
 const THEMES = ['system', 'light', 'dark'];
 // 'bypass' skips every approval (Claude Code's bypassPermissions). The page puts it behind two warnings,
 // and the office only accepts it with bypassConfirmed. The guardrails still apply.
@@ -874,6 +889,7 @@ function startWorker(p, { mode } = {}) {
   });
   w.q = q;
   workers.set(p.id, w);
+  refreshModels(q);
 
   w.done = (async () => {
     try {
@@ -892,6 +908,26 @@ function startWorker(p, { mode } = {}) {
     }
   })();
   return w;
+}
+
+// Ask Claude Code which models this account can use, at most every few hours. Its "opus", "sonnet" and
+// "haiku" rows always mean the newest of each, so a critter set to one moves up when a new model comes out.
+let modelsAskedAt = 0;
+async function refreshModels(q) {
+  if (Date.now() - modelsAskedAt < 6 * 3600e3) return;
+  modelsAskedAt = Date.now();
+  try {
+    const list = await Promise.race([q.supportedModels(), new Promise((_, no) => setTimeout(() => no(new Error('slow')), 30000))]);
+    const rows = list.filter(m => m.value && m.value !== 'default').map(m => ALIASES.includes(m.value)
+      ? { value: m.value, label: `Newest ${m.value[0].toUpperCase() + m.value.slice(1)} (now ${m.displayName})`, latest: true, name: m.displayName, resolved: m.resolvedModel || '' }
+      : { value: m.value, label: m.displayName || m.value, resolved: m.resolvedModel || m.value });
+    if (!rows.length) return;
+    const models = [MODELS[0], ...rows.filter(r => r.latest), ...rows.filter(r => !r.latest)];
+    if (JSON.stringify(models) === JSON.stringify(office.models)) return;
+    office.models = models;
+    save();
+    broadcast({ type: 'models', models });
+  } catch { modelsAskedAt = 0; }
 }
 
 // Helpers a critter sent off in the background (sub-agents). While any are out,
@@ -1842,7 +1878,7 @@ const server = http.createServer(async (req, res) => {
         for (const k of EDITABLE) if (k in f) clean[k] = f[k];
         if (p.deskOf) { delete clean.name; delete clean.plate; delete clean.folder; }  // those come from the cubicle
         if ('folder' in clean && clean.folder && !isDir(clean.folder)) return send(res, 400, { error: 'That folder does not exist.' });
-        if ('model' in clean && !MODELS.includes(clean.model)) return send(res, 400, { error: 'Unknown model.' });
+        if ('model' in clean && !knownModel(clean.model, p)) return send(res, 400, { error: 'Unknown model.' });
         if ('effort' in clean && !EFFORTS.includes(clean.effort)) return send(res, 400, { error: 'Unknown effort level.' });
         if ('jobs' in clean) { try { clean.jobs = cleanJobs(clean.jobs, p.jobs); } catch (e) { return send(res, 400, { error: e.message }); } }
         if ('scratch' in clean) clean.scratch = String(clean.scratch ?? '').slice(0, 50000);
