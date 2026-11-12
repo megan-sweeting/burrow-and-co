@@ -913,16 +913,32 @@ function startWorker(p, { mode } = {}) {
 // Ask Claude Code which models this account can use, at most every few hours. Its "opus", "sonnet" and
 // "haiku" rows always mean the newest of each, so a critter set to one moves up when a new model comes out.
 let modelsAskedAt = 0;
+// "Fable 5.2" → ['Fable', [5, 2]], to sort versions and spot a shortcut that lags behind.
+const modelVersion = name => { const m = /^(.*?)\s*(\d+(?:\.\d+)*)$/.exec(String(name || '').trim());
+  return m ? [m[1], m[2].split('.').map(Number)] : [String(name || ''), []]; };
+const newer = (a, b) => { for (let i = 0; i < Math.max(a.length, b.length); i++) if ((a[i] || 0) !== (b[i] || 0)) return (a[i] || 0) > (b[i] || 0); return false; };
+// Claude Code's list as the menu: shortcuts first, then exact versions newest first. Claude Code can list an
+// exact version newer than its own shortcut (Fable 5.2 while "fable" is still 5.1); the label says so.
+function modelMenu(list) {
+  const exact = list.filter(m => m.value && m.value !== 'default' && !ALIASES.includes(m.value))
+    .map(m => ({ value: m.value, label: m.displayName || m.value, resolved: m.resolvedModel || m.value }))
+    .sort((a, b) => { const [fa, va] = modelVersion(a.label), [fb, vb] = modelVersion(b.label);
+      return newer(va, vb) ? -1 : newer(vb, va) ? 1 : fa.localeCompare(fb); });
+  const latest = list.filter(m => ALIASES.includes(m.value)).map(m => {
+    const family = m.value[0].toUpperCase() + m.value.slice(1), [, v] = modelVersion(m.displayName);
+    const ahead = exact.find(r => { const [f, rv] = modelVersion(r.label); return f === family && newer(rv, v); });
+    return { value: m.value, latest: true, name: m.displayName, resolved: m.resolvedModel || '',
+      label: ahead ? `${family} shortcut (${m.displayName}; a newer ${ahead.label} is listed below)` : `Newest ${family} (now ${m.displayName})` };
+  });
+  return exact.length || latest.length ? [MODELS[0], ...latest, ...exact] : null;
+}
 async function refreshModels(q) {
   if (Date.now() - modelsAskedAt < 6 * 3600e3) return;
   modelsAskedAt = Date.now();
   try {
     const list = await Promise.race([q.supportedModels(), new Promise((_, no) => setTimeout(() => no(new Error('slow')), 30000))]);
-    const rows = list.filter(m => m.value && m.value !== 'default').map(m => ALIASES.includes(m.value)
-      ? { value: m.value, label: `Newest ${m.value[0].toUpperCase() + m.value.slice(1)} (now ${m.displayName})`, latest: true, name: m.displayName, resolved: m.resolvedModel || '' }
-      : { value: m.value, label: m.displayName || m.value, resolved: m.resolvedModel || m.value });
-    if (!rows.length) return;
-    const models = [MODELS[0], ...rows.filter(r => r.latest), ...rows.filter(r => !r.latest)];
+    const models = modelMenu(list);
+    if (!models) return;
     if (JSON.stringify(models) === JSON.stringify(office.models)) return;
     office.models = models;
     save();
