@@ -710,13 +710,14 @@ function officeTools(projectId) {
       tool('get_boss_todos', 'Read the to-dos the boss assigned you and the brainstorm ideas for this project.', {}, async () => {
         const me = find(projectId), p = homeOf(me);  // desk mates share the cubicle's list
         if (!p) return text('Cubicle not found.');
-        const open = p.todos.filter(t => !t.done);
+        const open = p.todos.filter(t => !t.done && !t.paused);
         const group = (label, list) => `${label}:\n${list.map(t => `- [${t.id}] ${t.text}`).join('\n') || '(none)'}`;
         const todos = [
           group('Yours to do', open.filter(t => (t.owner || 'critter') === 'critter' && t.owner)),
           group('Together with the boss (check with them first)', open.filter(t => t.owner === 'together')),
           group('The boss\'s own (for context only, do not do these)', open.filter(t => t.owner === 'boss')),
           group('Not sorted yet (sort them with edit_todo when you can tell)', open.filter(t => !t.owner)),
+          group('On pause (cannot be done yet: waiting on something or for a later date. Do not work on these)', p.todos.filter(t => !t.done && t.paused)),
         ].join('\n\n');
         const ideas = p.ideas.map(i => `- ${i.text}`).join('\n') || '(none)';
         return text(`Open to-dos from the boss:\n${todos}\n\nBrainstorm ideas (not assigned yet):\n${ideas}`);
@@ -724,12 +725,13 @@ function officeTools(projectId) {
       tool('add_todo', "Add a to-do to this project's list on the boss's board (for follow-up work the boss should see or you should do later).", {
         text: z.string().describe('Plain English, one line. No code or file names unless essential.'),
         owner: z.enum(['critter', 'boss', 'together']).optional().describe('critter = yours to do, boss = only the boss can do it, together = needs both of you'),
-      }, async ({ text: t, owner }) => {
+        paused: z.boolean().optional().describe('true = it cannot be done yet (waiting on something, or for a later date); it goes under On Pause'),
+      }, async ({ text: t, owner, paused }) => {
         const me = find(projectId), p = homeOf(me);  // desk mates share the cubicle's list
         const clean = String(t || '').trim().slice(0, 300);
         if (!p || !clean) return text('Nothing added.');
         const id = crypto.randomBytes(4).toString('hex');
-        p.todos.push({ id, text: clean, done: false, by: workerName(me), at: Date.now(), owner: owner || 'critter' });
+        p.todos.push({ id, text: clean, done: false, by: workerName(me), at: Date.now(), owner: owner || 'critter', ...(paused && { paused }) });
         changed(p);
         return text(`Added to-do [${id}]: ${clean}`);
       }),
@@ -737,12 +739,14 @@ function officeTools(projectId) {
         id: z.string().describe('The to-do id shown in brackets by get_boss_todos'),
         text: z.string().optional().describe('The new wording, plain English, one line'),
         owner: z.enum(['critter', 'boss', 'together']).optional().describe('Who it is for: critter, boss or together'),
-      }, async ({ id, text: t, owner }) => {
+        paused: z.boolean().optional().describe('true = put it on pause (it cannot be done yet); false = take it off pause'),
+      }, async ({ id, text: t, owner, paused }) => {
         const me = find(projectId), p = homeOf(me);  // desk mates share the cubicle's list
         const td = p?.todos.find(x => x.id === id);
         if (!td) return text('No to-do with that id.');
         if (String(t || '').trim()) td.text = String(t).trim().slice(0, 300);
         if (owner) td.owner = owner;
+        if (paused !== undefined) td.paused = paused;
         changed(p);
         return text('Updated: ' + td.text);
       }),
@@ -804,7 +808,8 @@ function officePrompt(p) {
     `rather than "hdr-logo tidy → Meaty .woff2".\n` +
     `- Call mcp__office__complete_todo when you finish one of the boss's to-dos. You can also keep the list tidy: ` +
     `add_todo for follow-up work, edit_todo to reword or sort, and remove_todo only for duplicates or things no longer needed (always say what you removed). ` +
-    `Every to-do has an owner: critter (yours), boss (only the boss can do it, e.g. photos, phone checks, decisions), or together. Only work on critter and together ones.\n` +
+    `Every to-do has an owner: critter (yours), boss (only the boss can do it, e.g. photos, phone checks, decisions), or together. Only work on critter and together ones. ` +
+    `A to-do that can't be done yet (it is waiting on something, or is for a later date) goes on pause with edit_todo: leave paused ones alone until they come off pause.\n` +
     (DESKTOP_SESSIONS ? `- If a task needs something only the Claude desktop app has (the design canvas / Claude Design, the browser pane, the iOS Simulator view), ` +
     `do not say you can't: call mcp__office__open_in_desktop_app, and the chat moves there with you.\n` : '') +
     `- The boss approves risky actions in a pop-up, so just attempt the action; do not ask for permission in chat first.\n` +

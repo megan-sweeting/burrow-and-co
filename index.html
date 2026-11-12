@@ -730,7 +730,7 @@
   .todo-add { flex-wrap: wrap; align-items: center; }
   .todo-add .field { flex: 1 1 260px; }
   .owner-pick { border: 0; margin: 0; padding: 0; display: flex; gap: 4px; }
-  .owner-pick label { cursor: pointer; }
+  .owner-pick label, label.owner-pick { cursor: pointer; }
   .owner-pick input { position: absolute; opacity: 0; width: 1px; height: 1px; }
   .owner-pick span { display: inline-block; padding: 5px 11px; border-radius: 999px; border: 2px solid var(--line); font-size: 13px; font-weight: 800; }
   .owner-pick input:checked + span { background: var(--moss); border-color: var(--moss); color: var(--moss-ink); }
@@ -1805,7 +1805,7 @@ const TOURS = {
     { at: '#drawer .practice', title: 'Your practice checklist', text: n => `Six small steps to try every part of a cubicle. Each one ticks itself off as you go, and the line underneath always says what to do next.` },
     { at: '#drawer .composer', title: 'Chat with your critter', text: n => `This is where you talk to ${n}. Say what you'd like done in plain words. You can paste or drag in photos and files, and type / for shortcuts.` },
     { at: '#drawer .plan-btn', title: 'Plan First', text: n => `For bigger jobs, turn on Plan First before you send. ${n} looks around, writes a plan, and waits for your OK before changing anything.` },
-    { at: '#dTabs [data-t="todos"]', title: 'To-Dos', text: n => `This project's to-do list. Each to-do says who it's for: ${n}, you, or both of you together. ${n} ticks theirs off when they're done.` },
+    { at: '#dTabs [data-t="todos"]', title: 'To-Dos', text: n => `This project's to-do list. Each to-do says who it's for: ${n}, you, or both of you together. ${n} ticks theirs off when they're done. Pause the ones that can't be done yet and they wait under On Pause.` },
     { at: '#dTabs [data-t="details"]', title: 'Details', text: n => `The project's folder, today's task, where ${n} left off, and how much freedom they have before they must ask you. Close Project lives here too, for when the work is finished.` },
     { at: '#dTabs [data-t="changes"]', title: 'Changes', text: n => `Every file ${n} changed. If the project uses git, you can save versions and publish to GitHub here. Don't like a change? Hover over your message in the chat and press Undo From Here. That works with or without git.` },
     { at: '#drawer [data-action="new-day"]', title: 'Clock Out', text: n => `Each chat is one shift. When a job is done, press Clock Out: ${n} writes a summary and starts a fresh chat. Old chats live under Past Shifts. Long chats use more of your plan, so fresh shifts are cheaper.` },
@@ -2084,6 +2084,7 @@ function todoItem(p, t, w) {
       <input type="checkbox" ${t.done ? 'checked' : ''} data-action="toggle-todo" data-id="${p.id}" data-t="${t.id}" aria-label="Done">
       <span class="txt" title="${esc(t.text)}">${esc(showTodo(t.text))}${t.by ? ` <small class="by">added by ${esc(t.by)}</small>` : ''}</span>
       <button class="owner o-${t.owner || 'none'}" data-action="todo-owner" data-id="${p.id}" data-t="${t.id}" title="Who is this for? Click to change">${esc(ownerLabel(t.owner, w))}</button>
+      <button class="mini" data-action="todo-pause" data-id="${p.id}" data-t="${t.id}" title="${t.paused ? 'Put it back on the list: it can be done now' : "Set it aside: it can't be done yet (waiting on something, or for a later date)"}">${t.paused ? 'Resume' : 'Pause'}</button>
       <button class="mini" data-action="del-todo" data-id="${p.id}" data-t="${t.id}" aria-label="Delete to-do">✕</button>
     </li>`;
 }
@@ -2102,9 +2103,10 @@ document.addEventListener('toggle', e => {
 function todoList(p, { burrow = false } = {}) {
   const w = workerOf(p);
   if (!p.todos.some(t => !t.done)) return '<div class="empty-note">Nothing on the list.</div>';
-  const groups = [['critter', `For ${w.name}`], ['together', 'Together'], ['boss', 'For You'], [null, 'Not Sorted Yet']];
+  // On Pause holds to-dos that can't be done yet, whoever they are for, so it sits last.
+  const groups = [['critter', `For ${w.name}`], ['together', 'Together'], ['boss', 'For You'], [null, 'Not Sorted Yet'], ['paused', 'On Pause']];
   return groups.map(([o, label]) => {
-    const list = p.todos.filter(t => !t.done && (t.owner || null) === o);
+    const list = p.todos.filter(t => !t.done && (o === 'paused' ? t.paused : !t.paused && (t.owner || null) === o));
     if (!list.length) return '';
     const key = `${p.id}:${o || 'none'}`;
     const open = burrow ? burrowOpen.has(key) : !folded.has(key);
@@ -2120,6 +2122,7 @@ function todoForm(p) {
     <fieldset class="owner-pick"><legend class="sr">Who is it for?</legend>
       ${OWNERS.map((o, i) => `<label><input type="radio" name="owner-${p.id}" value="${o}" ${i === 0 ? 'checked' : ''}><span>${esc(ownerLabel(o, w))}</span></label>`).join('')}
     </fieldset>
+    <label class="owner-pick" title="It can't be done yet: waiting on something, or for a later date"><input type="checkbox" name="paused"><span>On Pause</span></label>
     <button class="btn small">Add</button></form>`;
 }
 function folderHTML(p) {
@@ -3375,6 +3378,13 @@ document.addEventListener('click', async e => {
       if (drawer.id) renderDrawer(true);
       break;
     }
+    case 'todo-pause': {
+      const td = p.todos.find(x => x.id === t);
+      td.paused = !td.paused;
+      patch(p, { todos: p.todos });
+      if (drawer.id) renderDrawer(true);
+      break;
+    }
     case 'clear-done': patch(p, { todos: p.todos.filter(x => !x.done) }); break;
     case 'del-idea': patch(p, { ideas: p.ideas.filter(x => x.id !== t) }); break;
     case 'promote': {
@@ -3584,7 +3594,8 @@ document.addEventListener('submit', async e => {
   if (!text || !p) return;
   if (form.dataset.form === 'todo') {
     const owner = form.querySelector('input[type=radio]:checked')?.value || 'critter';
-    patch(p, { todos: [...p.todos, { id: rid(), text, done: false, owner }] });
+    const paused = form.querySelector('input[name=paused]').checked;
+    patch(p, { todos: [...p.todos, { id: rid(), text, done: false, owner, ...(paused && { paused }) }] });
   }
   else patch(p, { ideas: [...p.ideas, { id: rid(), text }] });
   const where = form.closest('#drawer') ? '#drawer' : '#app';
